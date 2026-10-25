@@ -40,7 +40,7 @@ sudo -i
 ### Установка
 
 ```bash
-sudo -i bash -c 'curl -4fsSL "https://raw.githubusercontent.com/POLESNIESOVETI12/web-panel-proxy/v2.7.0/install.sh" -o /tmp/wpp-install.sh && bash /tmp/wpp-install.sh; code=$?; rm -f /tmp/wpp-install.sh; exit $code'
+sudo -i bash -c 'curl -4fsSL "https://raw.githubusercontent.com/nsleader/web-panel-proxy/v2.7.0/install.sh" -o /tmp/wpp-install.sh && bash /tmp/wpp-install.sh; code=$?; rm -f /tmp/wpp-install.sh; exit $code'
 ```
 
 Команда доступна после публикации тега `v2.7.0` в GitLab. Установщик запросит домен, email для HTTPS-сертификата, логин и пароль панели. После установки он покажет адрес панели и данные для входа.

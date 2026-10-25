@@ -9,7 +9,7 @@ export GIT_TERMINAL_PROMPT=0
 export GIT_CONFIG_NOSYSTEM=1
 export GIT_CONFIG_GLOBAL=/dev/null
 
-REPOSITORY="https://github.com/POLESNIESOVETI12/web-panel-proxy.git"
+REPOSITORY="https://github.com/nsleader/web-panel-proxy.git"
 RELEASE_REF="${WEB_PANEL_PROXY_REF:-v2.7.0}"
 
 die() { echo "ERROR: $*" >&2; exit 1; }

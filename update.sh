@@ -42,7 +42,7 @@ export GIT_TERMINAL_PROMPT=0
 export GIT_CONFIG_NOSYSTEM=1
 export GIT_CONFIG_GLOBAL=/dev/null
 
-REPOSITORY="https://github.com/POLESNIESOVETI12/web-panel-proxy.git"
+REPOSITORY="https://github.com/nsleader/web-panel-proxy.git"
 REQUESTED_REF="${WEB_PANEL_PROXY_REF:-}"
 RELEASE_REF="$REQUESTED_REF"
 LOCAL_SOURCE=""
