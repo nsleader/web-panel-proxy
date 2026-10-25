@@ -308,11 +308,16 @@ def _tail(path, limit=300):
 
 
 def end_to_end(spec, origin_host, timeout=20):
-    """Send a real body through the CDN, XHTTP and Xray to the WPP probe on this VPS.
+    """Send a real body through the CDN, XHTTP and Xray to the WPP upload probe on this VPS.
 
+    The probe (a one-time token endpoint in the panel) reads the whole body and
+    reports how many bytes arrived, so success means the upload was delivered.
     Returns (level, detail, fix).  The helper client uses the stored profile's own
     UUID and the same XHTTP settings as the subscription link.
     """
+    probe_path = str(spec.get("probe_path", ""))
+    if not probe_path.startswith("/"):
+        return "fail", "Не задан адрес проверочной точки WPP.", "Обновите WPP."
     xray_bin = spec.get("xray_bin", "")
     if not (xray_bin and os.access(xray_bin, os.X_OK)):
         return "fail", "Исполняемый файл Xray не найден.", "Обновите WPP: сквозной тест запускает временный клиент Xray."
@@ -351,35 +356,46 @@ def end_to_end(spec, origin_host, timeout=20):
                     secure.settimeout(timeout)
                     body = os.urandom(E2E_UPLOAD_BYTES)
                     request = (
-                        f"POST /__wpp_cdn_probe?e2e={time.time_ns()} HTTP/1.1\r\nHost: {origin_host}\r\n"
+                        f"POST {probe_path} HTTP/1.1\r\nHost: {origin_host}\r\n"
                         "User-Agent: WPP-CDN-Doctor/1.0\r\nContent-Type: application/octet-stream\r\n"
                         f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n"
                     ).encode("ascii")
                     stage = "отправка тела запроса"
                     upload_started = time.monotonic()
                     secure.sendall(request + body)
-                    upload_seconds = max(time.monotonic() - upload_started, 0.001)
                     stage = "ответ источника"
                     reply = b""
-                    while b"\r\n\r\n" not in reply and len(reply) < 16384:
+                    while len(reply) < 16384:
+                        head, separator, rest = reply.partition(b"\r\n\r\n")
+                        if separator:
+                            match = re.search(rb"(?im)^content-length:\s*(\d+)", head)
+                            if not match or len(rest) >= int(match.group(1)):
+                                break
                         chunk = secure.recv(4096)
                         if not chunk:
                             break
                         reply += chunk
+                    upload_seconds = max(time.monotonic() - upload_started, 0.001)
                 finally:
                     raw.close()
             except (OSError, ssl.SSLError) as exc:
                 return "fail", f"Сквозной тест остановился на этапе «{stage}»: {exc}", \
                     "Запрос не прошёл через CDN и Xray целиком. Проверьте разрешённые методы, лимиты тела и заголовков в CDN."
-            lines = reply.decode("latin-1", "replace").split("\r\n")
-            status = lines[0].split(" ", 2)[1] if lines and len(lines[0].split(" ", 2)) > 1 else "?"
-            signature = any(line.lower() == "x-wpp-cdn-probe: ok" for line in lines[1:])
+            head, _, payload = reply.partition(b"\r\n\r\n")
+            status = (head.split(b"\r\n", 1)[0].split(b" ") + [b"", b"?"])[1].decode("ascii", "replace")
+            try:
+                received = int(json.loads(payload.decode("utf-8", "replace")).get("received", -1))
+            except (ValueError, AttributeError):
+                received = -1
             total_ms = int((time.monotonic() - started) * 1000)
-            if status != "200" or not signature:
-                return "fail", f"Туннель открыт, но источник ответил HTTP {status} без подписи WPP.", \
-                    "Проверьте Host, источник и маршрут Caddy; запустите восстановление."
+            if status != "200" or received < 0:
+                return "fail", f"Туннель открыт, но проверочная точка WPP ответила HTTP {status}.", \
+                    "Проверьте Host и маршрут Caddy для /wpp-api/*; запустите восстановление."
+            if received != E2E_UPLOAD_BYTES:
+                return "fail", f"Тело доставлено не полностью: получено {received} из {E2E_UPLOAD_BYTES} байт.", \
+                    "CDN или Xray обрезают запросы. Проверьте лимиты тела и заголовков, метод и режим XHTTP."
             speed = E2E_UPLOAD_BYTES / upload_seconds
-            detail = f"{E2E_UPLOAD_BYTES // 1024} КиБ отправлены за {upload_seconds:.1f} с (~{speed / 1024:.0f} КиБ/с), всего {total_ms} мс"
+            detail = f"{E2E_UPLOAD_BYTES // 1024} КиБ доставлены полностью за {upload_seconds:.1f} с (~{speed / 1024:.0f} КиБ/с), весь тест {total_ms} мс"
             if speed < E2E_SLOW_BYTES_PER_SEC:
                 return "warn", detail + ". Исходящая скорость очень низкая.", \
                     "Проверьте лимиты CDN на запросы и тело; для GET-only CDN скорость upload ограничена edge-сервером."

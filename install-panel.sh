@@ -413,9 +413,9 @@ XRAY_PATH="$(cat "$XRAY_PATH_FILE")"
 [[ "$XRAY_PATH" =~ ^/vless-[a-f0-9]{24}$ || "$XRAY_PATH" =~ ^/assets/[a-f0-9]{12}/[a-f0-9]{12}$ ]] || die "Stored VLESS path is invalid."
 
 if [[ "$UPDATING" == "1" ]]; then
-    echo "Updating WEB PANEL PROXY V 2.7.3..."
+    echo "Updating WEB PANEL PROXY V 2.7.4..."
 else
-    echo "Configuring WEB PANEL PROXY V 2.7.3..."
+    echo "Configuring WEB PANEL PROXY V 2.7.4..."
 fi
 INSTALL_CREDENTIALS="/etc/web-proxy-panel/install-credentials"
 if [[ "$UPDATING" == "1" ]]; then
@@ -2526,6 +2526,22 @@ def proxy_user(protocol,secret):
     return next((u for u in users() if u.get("protocol")==protocol and any(
         secrets.compare_digest(str(candidate),str(secret)) for candidate in
         (u.get("device_secrets") if isinstance(u.get("device_secrets"),list) else [u.get("secret","")]))),None)
+CDN_PROBE_PATH="/wpp-api/cdn-probe"
+CDN_PROBE_MAX=256*1024
+CDN_PROBE_TOKENS={}
+CDN_PROBE_LOCK=threading.Lock()
+def cdn_probe_token():
+    """One-time token that lets only the running CDN Doctor use the upload probe."""
+    now=time.time()
+    token=secrets.token_hex(16)
+    with CDN_PROBE_LOCK:
+        for key in [k for k,v in CDN_PROBE_TOKENS.items() if v<now]: del CDN_PROBE_TOKENS[key]
+        CDN_PROBE_TOKENS[token]=now+120
+    return token
+def cdn_probe_consume(token):
+    with CDN_PROBE_LOCK:
+        expires=CDN_PROBE_TOKENS.pop(str(token),0)
+    return expires>time.time()
 def cdn_e2e_spec(profile,xray_path_value):
     """Client side of a stored CDN profile, identical to its subscription link."""
     secret=str(profile.get("secret",""))
@@ -2537,7 +2553,7 @@ def cdn_e2e_spec(profile,xray_path_value):
     return {"uuid":secret,"address":route["address"],"sni":route["sni"],"host":route["host"],
         "path":cdn.endpoint_path(xray_path_value,route.get("path_variant","cdn")),"mode":route["mode"],
         "extra":route.get("extra"),"fingerprint":route["fingerprint"],"alpn":route.get("alpn") or ["h2"],
-        "xray_bin":XRAY_BIN}
+        "xray_bin":XRAY_BIN,"probe_path":CDN_PROBE_PATH+"?t="+cdn_probe_token()}
 def proxy_connection(user):
     if not user: return None
     try:
@@ -2732,7 +2748,7 @@ class Handler(BaseHTTPRequestHandler):
             if not self.api_auth(): return
             if path==node_api.API_PREFIX+"/status":
                 loc=node_api.load_location(LOCATION_FILE)
-                self.send_json({"ok":True,"api_version":1,"version":"2.7.3","domain":DOMAIN,
+                self.send_json({"ok":True,"api_version":1,"version":"2.7.4","domain":DOMAIN,
                     "location":loc,"capabilities":["vless","hysteria","federation"]}); return
             if path==node_api.API_PREFIX+"/profiles":
                 result=[]
@@ -2957,6 +2973,22 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path=urlparse(self.path).path
+
+        if path==CDN_PROBE_PATH:
+            # Reads the whole body so CDN Doctor can verify the upload arrived intact.
+            token=parse_qs(urlparse(self.path).query).get("t",[""])[0]
+            try: length=int(self.headers.get("Content-Length","-1"))
+            except ValueError: length=-1
+            if not cdn_probe_consume(token):
+                self.send_data("Not found",404); return
+            if length<0 or length>CDN_PROBE_MAX:
+                self.send_data("Too large",413); return
+            received=0
+            while received<length:
+                chunk=self.rfile.read(min(65536,length-received))
+                if not chunk: break
+                received+=len(chunk)
+            self.send_json({"received":received}); return
 
         if path.startswith(node_api.API_PREFIX+"/"):
             if not self.api_auth(): return
@@ -3803,7 +3835,7 @@ fi
 echo "[4/6] Creating systemd service..."
 cat > "$SERVICE_FILE" <<EOF
 [Unit]
-Description=WEB PANEL PROXY V 2.7.3
+Description=WEB PANEL PROXY V 2.7.4
 After=network-online.target caddy.service tproxy-server.service mtproxy.service web-proxy-panel-firewall.service
 Wants=network-online.target
 Requires=web-proxy-panel-firewall.service
@@ -3967,7 +3999,7 @@ unlock_changes(){ flock -u 9 2>/dev/null || true; exec 9>&-; }
 
 show_info(){
     local d p version
-    d="$(domain)"; p="$(panel_path)"; version="$(cat /etc/web-proxy-panel/version 2>/dev/null || echo '2.7.3')"
+    d="$(domain)"; p="$(panel_path)"; version="$(cat /etc/web-proxy-panel/version 2>/dev/null || echo '2.7.4')"
     echo
     echo "============================================================"
     echo "                 WEB PANEL PROXY"
@@ -4547,9 +4579,9 @@ fi
 echo
 echo "============================================================"
 if [[ "$UPDATING" == "1" ]]; then
-echo "          WEB PANEL PROXY V 2.7.3 UPDATED"
+echo "          WEB PANEL PROXY V 2.7.4 UPDATED"
 else
-echo "         WEB PANEL PROXY V 2.7.3 IS READY"
+echo "         WEB PANEL PROXY V 2.7.4 IS READY"
 fi
 echo "============================================================"
 echo
