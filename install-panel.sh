@@ -413,9 +413,9 @@ XRAY_PATH="$(cat "$XRAY_PATH_FILE")"
 [[ "$XRAY_PATH" =~ ^/vless-[a-f0-9]{24}$ || "$XRAY_PATH" =~ ^/assets/[a-f0-9]{12}/[a-f0-9]{12}$ ]] || die "Stored VLESS path is invalid."
 
 if [[ "$UPDATING" == "1" ]]; then
-    echo "Updating WEB PANEL PROXY V 2.7.1..."
+    echo "Updating WEB PANEL PROXY V 2.7.2..."
 else
-    echo "Configuring WEB PANEL PROXY V 2.7.1..."
+    echo "Configuring WEB PANEL PROXY V 2.7.2..."
 fi
 INSTALL_CREDENTIALS="/etc/web-proxy-panel/install-credentials"
 if [[ "$UPDATING" == "1" ]]; then
@@ -2719,7 +2719,7 @@ class Handler(BaseHTTPRequestHandler):
             if not self.api_auth(): return
             if path==node_api.API_PREFIX+"/status":
                 loc=node_api.load_location(LOCATION_FILE)
-                self.send_json({"ok":True,"api_version":1,"version":"2.7.1","domain":DOMAIN,
+                self.send_json({"ok":True,"api_version":1,"version":"2.7.2","domain":DOMAIN,
                     "location":loc,"capabilities":["vless","hysteria","federation"]}); return
             if path==node_api.API_PREFIX+"/profiles":
                 result=[]
@@ -3790,7 +3790,7 @@ fi
 echo "[4/6] Creating systemd service..."
 cat > "$SERVICE_FILE" <<EOF
 [Unit]
-Description=WEB PANEL PROXY V 2.7.1
+Description=WEB PANEL PROXY V 2.7.2
 After=network-online.target caddy.service tproxy-server.service mtproxy.service web-proxy-panel-firewall.service
 Wants=network-online.target
 Requires=web-proxy-panel-firewall.service
@@ -3954,7 +3954,7 @@ unlock_changes(){ flock -u 9 2>/dev/null || true; exec 9>&-; }
 
 show_info(){
     local d p version
-    d="$(domain)"; p="$(panel_path)"; version="$(cat /etc/web-proxy-panel/version 2>/dev/null || echo '2.7.1')"
+    d="$(domain)"; p="$(panel_path)"; version="$(cat /etc/web-proxy-panel/version 2>/dev/null || echo '2.7.2')"
     echo
     echo "============================================================"
     echo "                 WEB PANEL PROXY"
@@ -4345,7 +4345,8 @@ else:
     body = [line for line in lines[global_start+1:global_end]
             if not re.match(r'^\s*auto_https\b',line)]
     lines[global_start+1:global_end] = ["\tauto_https disable_redirects\n"] + body
-site_pattern = re.compile(r"^\s*"+re.escape(domain)+r"\s*\{\s*$")
+# The site address may list several hosts, e.g. "panel.example, example {".
+site_pattern = re.compile(r"^\s*(?:[^\s,{}]+\s*,\s*)*"+re.escape(domain)+r"(?:\s*,\s*[^\s,{}]+)*\s*\{\s*$")
 site_start = next((i for i,line in enumerate(lines) if site_pattern.match(line)),None)
 if site_start is None:
     raise SystemExit("WEB PANEL PROXY Caddy site block was not found")
@@ -4533,9 +4534,9 @@ fi
 echo
 echo "============================================================"
 if [[ "$UPDATING" == "1" ]]; then
-echo "          WEB PANEL PROXY V 2.7.1 UPDATED"
+echo "          WEB PANEL PROXY V 2.7.2 UPDATED"
 else
-echo "         WEB PANEL PROXY V 2.7.1 IS READY"
+echo "         WEB PANEL PROXY V 2.7.2 IS READY"
 fi
 echo "============================================================"
 echo

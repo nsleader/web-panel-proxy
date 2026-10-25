@@ -70,7 +70,7 @@ trap finish_install EXIT
 wpp_progress_start "Проверка пакета"
 wpp_progress 5 "Подготовка сервера"
 
-echo "WEB PANEL PROXY V 2.7.1: preparing server..."
+echo "WEB PANEL PROXY V 2.7.2: preparing server..."
 
 PANEL_UPDATE=0
 if [[ -s /var/lib/tproxy-panel/data.json ]] &&
@@ -92,7 +92,7 @@ install -o root -g root -m 0755 \
 
 echo "Installing proxy services..."
 wpp_progress 10 "Установка прокси-служб"
-WEB_PANEL_PROXY_PACKAGE_VERSION="2.7.1" bash "$BASE/install-webproxy-core.sh"
+WEB_PANEL_PROXY_PACKAGE_VERSION="2.7.2" bash "$BASE/install-webproxy-core.sh"
 wpp_progress 55 "Прокси-службы установлены"
 
 echo "Installing control panel..."
@@ -131,5 +131,5 @@ if ! systemctl start web-panel-proxy-component-auto-update.service; then
 fi
 echo "Installation complete."
 wpp_progress 100 "Установка завершена"
-printf '%s\n' '2.7.1' > /etc/web-proxy-panel/version
+printf '%s\n' '2.7.2' > /etc/web-proxy-panel/version
 chmod 0600 /etc/web-proxy-panel/version
