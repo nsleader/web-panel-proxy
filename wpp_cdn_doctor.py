@@ -1,9 +1,11 @@
 """Bounded diagnostics for stored WPP VLESS CDN profiles."""
 import http.client
+import json
 import os
 import re
 import socket
 import ssl
+import subprocess
 import tempfile
 import time
 from datetime import datetime, timezone
@@ -11,6 +13,8 @@ from urllib.parse import quote
 import wpp_cdn
 
 HOST_RE = re.compile(r"(?=.{1,253}\Z)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z")
+E2E_UPLOAD_BYTES = 128 * 1024
+E2E_SLOW_BYTES_PER_SEC = 30 * 1024
 PROVIDER_PORTS = {"beget": 10002, "selectel": 10003, "vk": 10004, "yandex": 10001, "timeweb": 10005, "custom": 10001}
 
 
@@ -226,7 +230,172 @@ def _local_port(port, timeout):
         return True
 
 
-def run(profile, origin_domain, xray_path, timeout=7):
+def _free_port():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
+def client_config(spec, socks_port):
+    """Xray client equal to the generated subscription link, plus a local SOCKS inbound."""
+    xhttp = {"path": spec["path"], "host": spec["host"], "mode": spec["mode"]}
+    xhttp.update(spec.get("extra") or {})
+    return {
+        "log": {"loglevel": "warning"},
+        "inbounds": [{
+            "listen": "127.0.0.1", "port": socks_port, "protocol": "socks",
+            "settings": {"auth": "noauth", "udp": False},
+        }],
+        "outbounds": [{
+            "protocol": "vless",
+            "settings": {"vnext": [{
+                "address": spec["address"], "port": 443,
+                "users": [{"id": spec["uuid"], "encryption": "none"}],
+            }]},
+            "streamSettings": {
+                "network": "xhttp",
+                "security": "tls",
+                "tlsSettings": {
+                    "serverName": spec["sni"],
+                    "fingerprint": spec["fingerprint"],
+                    "alpn": list(spec.get("alpn") or ["h2"]),
+                },
+                "xhttpSettings": xhttp,
+            },
+        }],
+    }
+
+
+def _read_exact(sock, size):
+    data = b""
+    while len(data) < size:
+        chunk = sock.recv(size - len(data))
+        if not chunk:
+            raise OSError("соединение закрыто Xray")
+        data += chunk
+    return data
+
+
+def _socks_connect(port, host, target_port, timeout):
+    sock = socket.create_connection(("127.0.0.1", port), timeout=timeout)
+    try:
+        sock.sendall(b"\x05\x01\x00")
+        if _read_exact(sock, 2) != b"\x05\x00":
+            raise OSError("SOCKS-вход Xray отклонил рукопожатие")
+        name = host.encode("idna")
+        sock.sendall(b"\x05\x01\x00\x03" + bytes([len(name)]) + name + target_port.to_bytes(2, "big"))
+        head = _read_exact(sock, 4)
+        if head[1] != 0:
+            raise OSError(f"туннель не открыт (SOCKS код {head[1]})")
+        atyp = head[3]
+        if atyp == 3:
+            address_length = _read_exact(sock, 1)[0]
+        else:
+            address_length = {1: 4, 4: 16}.get(atyp, 0)
+        _read_exact(sock, address_length + 2)
+        return sock
+    except BaseException:
+        sock.close()
+        raise
+
+
+def _tail(path, limit=300):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as stream:
+            return " ".join(stream.read().split())[-limit:]
+    except OSError:
+        return ""
+
+
+def end_to_end(spec, origin_host, timeout=20):
+    """Send a real body through the CDN, XHTTP and Xray to the WPP probe on this VPS.
+
+    Returns (level, detail, fix).  The helper client uses the stored profile's own
+    UUID and the same XHTTP settings as the subscription link.
+    """
+    xray_bin = spec.get("xray_bin", "")
+    if not (xray_bin and os.access(xray_bin, os.X_OK)):
+        return "fail", "Исполняемый файл Xray не найден.", "Обновите WPP: сквозной тест запускает временный клиент Xray."
+    port = _free_port()
+    process = None
+    with tempfile.TemporaryDirectory(prefix="wpp-e2e-") as workdir:
+        config_path = os.path.join(workdir, "client.json")
+        log_path = os.path.join(workdir, "xray.log")
+        with open(os.open(config_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w", encoding="utf-8") as stream:
+            json.dump(client_config(spec, port), stream)
+        log = open(log_path, "wb")
+        try:
+            process = subprocess.Popen(
+                [xray_bin, "run", "-config", config_path],
+                stdin=subprocess.DEVNULL, stdout=log, stderr=log, close_fds=True,
+            )
+            deadline = time.monotonic() + 5
+            while True:
+                if process.poll() is not None:
+                    return "fail", "Временный клиент Xray не запустился: " + (_tail(log_path) or f"код {process.returncode}"), \
+                        "Проверьте параметры профиля и версию Xray."
+                try:
+                    socket.create_connection(("127.0.0.1", port), timeout=0.3).close()
+                    break
+                except OSError:
+                    if time.monotonic() > deadline:
+                        return "fail", "Временный клиент Xray не открыл локальный порт за 5 с.", ""
+                    time.sleep(0.1)
+            started = time.monotonic()
+            stage = "открытие туннеля"
+            try:
+                raw = _socks_connect(port, origin_host, 443, timeout)
+                try:
+                    stage = "TLS через туннель"
+                    secure = ssl.create_default_context().wrap_socket(raw, server_hostname=origin_host)
+                    secure.settimeout(timeout)
+                    body = os.urandom(E2E_UPLOAD_BYTES)
+                    request = (
+                        f"POST /__wpp_cdn_probe?e2e={time.time_ns()} HTTP/1.1\r\nHost: {origin_host}\r\n"
+                        "User-Agent: WPP-CDN-Doctor/1.0\r\nContent-Type: application/octet-stream\r\n"
+                        f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n"
+                    ).encode("ascii")
+                    stage = "отправка тела запроса"
+                    upload_started = time.monotonic()
+                    secure.sendall(request + body)
+                    upload_seconds = max(time.monotonic() - upload_started, 0.001)
+                    stage = "ответ источника"
+                    reply = b""
+                    while b"\r\n\r\n" not in reply and len(reply) < 16384:
+                        chunk = secure.recv(4096)
+                        if not chunk:
+                            break
+                        reply += chunk
+                finally:
+                    raw.close()
+            except (OSError, ssl.SSLError) as exc:
+                return "fail", f"Сквозной тест остановился на этапе «{stage}»: {exc}", \
+                    "Запрос не прошёл через CDN и Xray целиком. Проверьте разрешённые методы, лимиты тела и заголовков в CDN."
+            lines = reply.decode("latin-1", "replace").split("\r\n")
+            status = lines[0].split(" ", 2)[1] if lines and len(lines[0].split(" ", 2)) > 1 else "?"
+            signature = any(line.lower() == "x-wpp-cdn-probe: ok" for line in lines[1:])
+            total_ms = int((time.monotonic() - started) * 1000)
+            if status != "200" or not signature:
+                return "fail", f"Туннель открыт, но источник ответил HTTP {status} без подписи WPP.", \
+                    "Проверьте Host, источник и маршрут Caddy; запустите восстановление."
+            speed = E2E_UPLOAD_BYTES / upload_seconds
+            detail = f"{E2E_UPLOAD_BYTES // 1024} КиБ отправлены за {upload_seconds:.1f} с (~{speed / 1024:.0f} КиБ/с), всего {total_ms} мс"
+            if speed < E2E_SLOW_BYTES_PER_SEC:
+                return "warn", detail + ". Исходящая скорость очень низкая.", \
+                    "Проверьте лимиты CDN на запросы и тело; для GET-only CDN скорость upload ограничена edge-сервером."
+            return "pass", detail, ""
+        finally:
+            if process is not None and process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
+            log.close()
+
+
+def run(profile, origin_domain, xray_path, timeout=7, e2e=None):
     """Return a user-facing report without accepting arbitrary probe targets."""
     provider = str(profile.get("provider", "custom")).strip().lower()
     cdn_host = _host(profile.get("public_host"))
@@ -268,6 +437,7 @@ def run(profile, origin_domain, xray_path, timeout=7):
         results.append(_result("origin", "Источник WPP", "fail", str(exc), "Проверьте DNS основного домена, порт 443 и службу Caddy."))
 
     cdn_headers = {}
+    selectel_403 = None
     try:
         status, cdn_headers, payload, latency = _request(cdn_host, "GET", probe_path, timeout)
         signature = cdn_headers.get("x-wpp-cdn-probe") == "ok"
@@ -275,10 +445,11 @@ def run(profile, origin_domain, xray_path, timeout=7):
             results.append(_result("edge", "Маршрут через CDN", "pass", f"HTTP {status}, {latency} мс"))
         elif status == 403 and provider == "selectel":
             reason = cdn_headers.get("x-reason-code", "не указан")
+            selectel_403 = (len(results), reason)
             results.append(_result(
-                "edge", "Маршрут через CDN", "warn",
+                "edge", "Маршрут через CDN", "fail",
                 f"Служебный путь вернул HTTP 403, код CDN: {reason}.",
-                "Для Selectel это допустимо при ограничении путей ресурса и не означает, что XHTTP не работает.",
+                "Для Selectel 403 может быть ограничением путей ресурса, но считается ошибкой, пока сквозной XHTTP-тест не подтвердит работу.",
             ))
         elif status == 403:
             reason = cdn_headers.get("x-reason-code", "не указан")
@@ -300,6 +471,24 @@ def run(profile, origin_domain, xray_path, timeout=7):
             results.append(_result("method", f"Метод {method}", "warn", f"Получен HTTP {status}.", "Проверьте разрешённые HTTP-методы CDN."))
     except (OSError, ssl.SSLError, http.client.HTTPException) as exc:
         results.append(_result("method", f"Метод {method}", "fail", str(exc), f"Проверьте поддержку метода {method} у CDN."))
+
+    dns_ok = any(item["key"] == "dns" and item["level"] == "pass" for item in results)
+    if e2e is None:
+        results.append(_result("e2e", "Сквозной XHTTP-тест", "warn", "Тест не запущен: нет данных профиля.", "Откройте проверку из панели WPP."))
+    elif not dns_ok:
+        results.append(_result("e2e", "Сквозной XHTTP-тест", "fail", "Пропущен: домен CDN не разрешается.", "Сначала исправьте DNS."))
+    else:
+        try:
+            level, detail, fix = end_to_end(e2e, origin_host)
+        except Exception as exc:
+            level, detail, fix = "fail", "Сквозной тест прерван: " + type(exc).__name__, ""
+        results.append(_result("e2e", "Сквозной XHTTP-тест", level, detail, fix))
+        if selectel_403 is not None and level in ("pass", "warn"):
+            index, reason = selectel_403
+            results[index] = _result(
+                "edge", "Маршрут через CDN", "pass",
+                f"Служебный путь вернул HTTP 403 (код CDN: {reason}), но сквозной XHTTP-тест подтвердил работу.",
+            )
 
     if method == "POST":
         results.append(_result("uplink", "Режим исходящего трафика", "pass", "packet-up · POST короткими порциями без зависания потокового запроса"))

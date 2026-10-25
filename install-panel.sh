@@ -1988,6 +1988,7 @@ OPENCCK_RU_CACHE="/var/lib/tproxy-panel/opencck-ru-amnezia.json"
 XRAY_RUNTIME_CONFIG="/etc/web-panel-proxy-xray/config.json"
 TRAFFIC="/var/lib/tproxy-panel/traffic.json"
 XRAY_PATH_FILE="/etc/web-proxy-panel/xray-path"
+XRAY_BIN="/opt/web-panel-proxy/xray/xray"
 CADDYFILE="/etc/caddy/Caddyfile"
 TLS_SYNC="/usr/local/sbin/web-panel-proxy-sync-tls"
 HYSTERIA_PORT=8443
@@ -2525,6 +2526,18 @@ def proxy_user(protocol,secret):
     return next((u for u in users() if u.get("protocol")==protocol and any(
         secrets.compare_digest(str(candidate),str(secret)) for candidate in
         (u.get("device_secrets") if isinstance(u.get("device_secrets"),list) else [u.get("secret","")]))),None)
+def cdn_e2e_spec(profile,xray_path_value):
+    """Client side of a stored CDN profile, identical to its subscription link."""
+    secret=str(profile.get("secret",""))
+    if not secret: return None
+    route=cdn.vless_route(DOMAIN,profile.get("cdn"))
+    connection=proxy_connection(profile)
+    if connection:
+        route=connection_store.apply_client_advanced(route,connection.get("advanced",{}))
+    return {"uuid":secret,"address":route["address"],"sni":route["sni"],"host":route["host"],
+        "path":cdn.endpoint_path(xray_path_value,route.get("path_variant","cdn")),"mode":route["mode"],
+        "extra":route.get("extra"),"fingerprint":route["fingerprint"],"alpn":route.get("alpn") or ["h2"],
+        "xray_bin":XRAY_BIN}
 def proxy_connection(user):
     if not user: return None
     try:
@@ -3140,7 +3153,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 with open(XRAY_PATH_FILE,encoding="utf-8") as stream: xray_path=stream.read().strip()
                 if not cdn.valid_path_root(xray_path): raise ValueError("Некорректный путь XHTTP на сервере.")
-                self.send_json(cdn_doctor.run(cdn_profile,DOMAIN,xray_path))
+                self.send_json(cdn_doctor.run(cdn_profile,DOMAIN,xray_path,e2e=cdn_e2e_spec(profile,xray_path)))
             except ValueError as exc:
                 self.send_json({"message":str(exc)},400)
             except Exception as exc:
@@ -3158,7 +3171,7 @@ class Handler(BaseHTTPRequestHandler):
                 with open(XRAY_PATH_FILE,encoding="utf-8") as stream: xray_path=stream.read().strip()
                 if not cdn.valid_path_root(xray_path): raise ValueError("Некорректный путь XHTTP на сервере.")
                 actions,warnings=repair_local_cdn(xray_path)
-                report=cdn_doctor.run(cdn_profile,DOMAIN,xray_path)
+                report=cdn_doctor.run(cdn_profile,DOMAIN,xray_path,e2e=cdn_e2e_spec(profile,xray_path))
                 report["repair_actions"]=actions
                 report["repair_warnings"]=warnings
                 report["repair_message"]="Локальная часть WPP восстановлена. Внешние настройки CDN не изменялись."
