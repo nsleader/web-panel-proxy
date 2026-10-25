@@ -656,7 +656,9 @@ def subscription_xray_configs_by_link(entries, name_prefix="WPP"):
             continue
         parsed = urlparse(link)
         label = unquote(parsed.fragment).strip() or f"Сервер {index}"
-        name = str(name_prefix) + " · " + label
+        # The client already groups profiles under the subscription title, so the
+        # remark is just the connection label (no repeated "<subscription> · " prefix).
+        name = label
         try:
             if isinstance(profile, dict) and profile.get("enabled", True):
                 result.append(xray_config(link, profile, name))
