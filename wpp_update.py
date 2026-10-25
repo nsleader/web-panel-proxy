@@ -12,7 +12,7 @@ STATUS = ROOT / 'status.json'
 AUTO_CONFIG = ROOT / 'auto-update.json'
 VERSION = Path('/etc/web-proxy-panel/version')
 UNIT = 'web-panel-proxy-web-update.service'
-REPO = 'https://github.com/POLESNIESOVETI12/web-panel-proxy.git'
+REPO = 'https://github.com/nsleader/web-panel-proxy.git'
 UPDATER = '/usr/local/sbin/web-panel-proxy-update'
 
 

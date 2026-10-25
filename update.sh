@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Safe in-place updater for WEB PANEL PROXY V 2.7.0.
+# Safe in-place updater for WEB PANEL PROXY V 2.7.1.
 set -Eeuo pipefail
 umask 077
 
@@ -42,7 +42,7 @@ export GIT_TERMINAL_PROMPT=0
 export GIT_CONFIG_NOSYSTEM=1
 export GIT_CONFIG_GLOBAL=/dev/null
 
-REPOSITORY="https://github.com/POLESNIESOVETI12/web-panel-proxy.git"
+REPOSITORY="https://github.com/nsleader/web-panel-proxy.git"
 REQUESTED_REF="${WEB_PANEL_PROXY_REF:-}"
 RELEASE_REF="$REQUESTED_REF"
 LOCAL_SOURCE=""
@@ -56,7 +56,7 @@ if [[ $# == 0 && -s "$SCRIPT_DIR/install-panel.sh" && -s "$SCRIPT_DIR/wpp_ui.py"
 fi
 if [[ "${1:-}" == "--local" || "$AUTO_LOCAL" == 1 ]]; then
     LOCAL_SOURCE="$SCRIPT_DIR"
-    RELEASE_REF="v2.7.0"
+    RELEASE_REF="v2.7.1"
     for file in install-panel.sh update.sh uninstall-web-proxy.sh repair-landing-pages.sh panel-logo.png wpp_subscriptions.py wpp_subscription_dashboard.py wpp_panel_extras.py wpp_ui.py wpp_metrics.py wpp_update.py wpp_nodes.py wpp_openflux.py wpp_awg.py wpp_firewall.py wpp_components.py wpp_cdn.py wpp_cdn_doctor.py wpp_connections.py wpp_backup.py wpp_routing.py wpp_presets.py; do
         [[ -s "$LOCAL_SOURCE/$file" ]] || { echo "Incomplete local archive: $file is missing." >&2; exit 1; }
     done
@@ -91,7 +91,7 @@ exec 9>/run/lock/web-panel-proxy.lock
 flock -n 9 || die "Another WEB PANEL PROXY install, update or removal is already running."
 
 echo "============================================================"
-echo "     WEB PANEL PROXY V 2.7.0 — SAFE UPDATE"
+echo "     WEB PANEL PROXY V 2.7.1 — SAFE UPDATE"
 echo "============================================================"
 echo "Users, administrator password, panel URL and site HTML will be retained."
 wpp_progress_start "Проверка установленной версии"
